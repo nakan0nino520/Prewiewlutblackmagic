@@ -27,10 +27,19 @@
                 <input type="range" id="lutIntensity" min="0" max="1" step="0.01" value="1.0">
                 <span id="intensityValue">100%</span>
             </label>
+            <label>
+                Hướng Video:
+                <select id="orientationSelect">
+                    <option value="normal">Bình thường</option>
+                    <option value="rotate180">Xoay 180°</option>
+                    <option value="flipX">Lật ngang (Trái/Phải)</option>
+                    <option value="flipY">Lật dọc (Trên/Dưới)</option>
+                </select>
+            </label>
             <button id="exportBtn" disabled>Xuất Video (WebM)</button>
         </div>
 
-        <div class="preview-container">
+        <div class="preview-container" id="previewContainer">
             <video id="videoElement" controls playsinline crossorigin="anonymous"></video>
             <canvas id="canvasElement"></canvas>
         </div>
@@ -39,4 +48,4 @@
 
     <script src="script.js"></script>
 </body>
-                  </html>
+</html>
