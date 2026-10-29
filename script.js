@@ -1,4 +1,4 @@
-// script.js - Xử lý LUT và video bằng WebGL
+// script.js - Xử lý LUT và video bằng WebGL (Hỗ trợ xoay/lật video)
 (function() {
     const video = document.getElementById('videoElement');
     const canvas = document.getElementById('canvasElement');
@@ -6,10 +6,11 @@
     const lutInput = document.getElementById('lutInput');
     const intensitySlider = document.getElementById('lutIntensity');
     const intensityValue = document.getElementById('intensityValue');
+    const orientationSelect = document.getElementById('orientationSelect');
+    const previewContainer = document.getElementById('previewContainer');
     const exportBtn = document.getElementById('exportBtn');
     const statusDiv = document.getElementById('status');
 
-    // Trạng thái
     let gl = null;
     let program = null;
     let videoTexture = null;
@@ -20,7 +21,6 @@
     let mediaRecorder = null;
     let recordedChunks = [];
 
-    // Shader sources (WebGL 1)
     const vertexShaderSource = `
         attribute vec2 a_position;
         attribute vec2 a_texCoord;
@@ -38,27 +38,21 @@
         uniform sampler2D u_lut;
         uniform float u_lutSize;
         uniform float u_intensity;
+        uniform int u_orientation; // 0: Normal, 1: Rotate 180, 2: Flip X, 3: Flip Y
 
         vec3 applyLUT(vec3 color) {
-            // Chuyển đổi màu (0..1) thành tọa độ trong lưới 3D LUT
-            // LUT texture là 2D, chứa các slice của khối 3D
             float size = u_lutSize;
-            float sliceSize = size * size; // số pixel mỗi slice
-            float sliceIndex = color.b * (size - 1.0); // slice theo blue
+            float sliceSize = size * size;
+            float sliceIndex = color.b * (size - 1.0);
             float sliceFrac = fract(sliceIndex);
             float slice0 = floor(sliceIndex);
             float slice1 = min(slice0 + 1.0, size - 1.0);
 
-            // Tọa độ trong slice: x = red, y = green
             float x = color.r * (size - 1.0);
             float y = color.g * (size - 1.0);
 
-            // Tính toán UV cho texture 2D chứa LUT
-            // Texture có kích thước (size*size) x size, mỗi hàng là một slice blue
             vec2 texSize = vec2(size * size, size);
-            // Lấy mẫu slice 0
             vec2 uv0 = vec2((slice0 * size + x) / texSize.x, y / texSize.y);
-            // Lấy mẫu slice 1
             vec2 uv1 = vec2((slice1 * size + x) / texSize.x, y / texSize.y);
 
             vec3 c0 = texture2D(u_lut, uv0).rgb;
@@ -67,14 +61,23 @@
         }
 
         void main() {
-            vec4 videoColor = texture2D(u_video, v_texCoord);
+            vec2 coord = v_texCoord;
+            
+            if (u_orientation == 1) {
+                coord = vec2(1.0 - coord.x, 1.0 - coord.y);
+            } else if (u_orientation == 2) {
+                coord = vec2(1.0 - coord.x, coord.y);
+            } else if (u_orientation == 3) {
+                coord = vec2(coord.x, 1.0 - coord.y);
+            }
+
+            vec4 videoColor = texture2D(u_video, coord);
             vec3 graded = applyLUT(videoColor.rgb);
             vec3 finalColor = mix(videoColor.rgb, graded, u_intensity);
             gl_FragColor = vec4(finalColor, videoColor.a);
         }
     `;
 
-    // Khởi tạo WebGL
     function initGL() {
         gl = canvas.getContext('webgl', { preserveDrawingBuffer: true });
         if (!gl) {
@@ -109,7 +112,6 @@
 
         gl.useProgram(program);
 
-        // Tạo quad full-screen
         const positions = new Float32Array([
             -1, -1, 1, -1, -1, 1,
             -1, 1, 1, -1, 1, 1
@@ -133,7 +135,6 @@
         gl.enableVertexAttribArray(aTexCoord);
         gl.vertexAttribPointer(aTexCoord, 2, gl.FLOAT, false, 0, 0);
 
-        // Tạo texture cho video
         videoTexture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, videoTexture);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -141,7 +142,6 @@
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
-        // Tạo texture cho LUT
         lutTexture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, lutTexture);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -151,11 +151,11 @@
 
         gl.uniform1i(gl.getUniformLocation(program, 'u_video'), 0);
         gl.uniform1i(gl.getUniformLocation(program, 'u_lut'), 1);
+        gl.uniform1i(gl.getUniformLocation(program, 'u_orientation'), 0);
 
         return true;
     }
 
-    // Tải video
     videoInput.addEventListener('change', (e) => {
         const file = e.target.files[0];
         if (!file) return;
@@ -171,7 +171,6 @@
         };
     });
 
-    // Phân tích tệp .cube
     function parseCube(text) {
         const lines = text.split(/\r?\n/);
         let size = 0;
@@ -183,7 +182,6 @@
                 size = parseInt(line.split(/\s+/)[1]);
                 continue;
             }
-            // Các dòng dữ liệu: R G B
             const parts = line.split(/\s+/);
             if (parts.length >= 3) {
                 const r = parseFloat(parts[0]);
@@ -200,14 +198,12 @@
         return { size, data: new Float32Array(data) };
     }
 
-    // Tạo texture LUT 2D từ dữ liệu 3D
     function createLUTTexture(lut) {
         const size = lut.size;
         const data = lut.data;
-        // Texture có kích thước (size*size) x size, mỗi hàng là một slice blue
         const width = size * size;
         const height = size;
-        const textureData = new Uint8Array(width * height * 4); // RGBA
+        const textureData = new Uint8Array(width * height * 4);
 
         for (let b = 0; b < size; b++) {
             for (let g = 0; g < size; g++) {
@@ -230,7 +226,6 @@
         lutSize = size;
     }
 
-    // Xử lý nhập LUT
     lutInput.addEventListener('change', (e) => {
         const file = e.target.files[0];
         if (!file) return;
@@ -248,12 +243,30 @@
         reader.readAsText(file);
     });
 
-    // Cường độ
     intensitySlider.addEventListener('input', () => {
         const val = parseFloat(intensitySlider.value);
         intensityValue.textContent = Math.round(val * 100) + '%';
         if (gl && program) {
+            gl.useProgram(program);
             gl.uniform1f(gl.getUniformLocation(program, 'u_intensity'), val);
+        }
+    });
+
+    orientationSelect.addEventListener('change', (e) => {
+        const val = e.target.value;
+        previewContainer.className = 'preview-container';
+        if (val !== 'normal') {
+            previewContainer.classList.add(val);
+        }
+
+        let orientCode = 0;
+        if (val === 'rotate180') orientCode = 1;
+        else if (val === 'flipX') orientCode = 2;
+        else if (val === 'flipY') orientCode = 3;
+
+        if (gl && program) {
+            gl.useProgram(program);
+            gl.uniform1i(gl.getUniformLocation(program, 'u_orientation'), orientCode);
         }
     });
 
@@ -265,7 +278,6 @@
         }
     }
 
-    // Vòng lặp render
     function render() {
         if (!gl || !program) return;
         if (video.readyState >= 2) {
@@ -284,21 +296,19 @@
         render();
     }
 
-    // Xuất video
     exportBtn.addEventListener('click', () => {
         if (!isReady || !canvas.captureStream) {
             statusDiv.textContent = 'Không thể xuất video (thiếu hỗ trợ captureStream).';
             return;
         }
-        const stream = canvas.captureStream(30); // 30 fps
-        // Thêm âm thanh từ video gốc nếu có
+        const stream = canvas.captureStream(30);
         try {
             const audioStream = video.captureStream ? video.captureStream() : null;
             if (audioStream) {
                 const audioTracks = audioStream.getAudioTracks();
                 audioTracks.forEach(track => stream.addTrack(track));
             }
-        } catch (e) { /* bỏ qua nếu không có âm thanh */ }
+        } catch (e) {}
 
         mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
         recordedChunks = [];
@@ -326,7 +336,6 @@
         };
     });
 
-    // Khởi tạo
     if (initGL()) {
         statusDiv.textContent = 'Sẵn sàng. Tải video và LUT.';
         gl.uniform1f(gl.getUniformLocation(program, 'u_intensity'), 1.0);
